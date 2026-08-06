@@ -71,13 +71,24 @@ class Database implements SessionHandlerInterface
                 $insertBuilder->prepareInsert($this->table, ['id' => $id, 'data' => $data, 'last_activity' => $time]);
 
                 [$sql, $bindings] = $insertBuilder->getSQL();
-                $this->pdo->prepare($sql)->execute($bindings);
+
+                try {
+                    $this->pdo->prepare($sql)->execute($bindings);
+                } catch (\PDOException $e) {
+                    // Код 23000 - нарушение уникальности (Integrity constraint violation).
+                    // Игнорируем ошибку, так как другой параллельный процесс уже успешно
+                    // создал запись. Данные будут обновлены при следующем запросе.
+                    if ($e->getCode() !== '23000') {
+                        throw $e;
+                    }
+                }
             }
 
             $this->pdo->commit();
             return true;
-        } catch (Throwable $e) {
+        } catch (\Throwable $e) {
             $this->pdo->rollBack();
+            error_log('Ошибка записи сессии в БД: ' . $e->getMessage());
             return false;
         }
     }

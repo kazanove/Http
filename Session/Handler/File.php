@@ -76,9 +76,11 @@ class File implements SessionHandlerInterface
             return false;
         }
 
-        if (!flock($fp, LOCK_SH)) {
+        // ИЗМЕНЕНО: Сразу используем LOCK_EX вместо LOCK_SH.
+        // Это предотвращает проблемы с повышением блокировки и гарантирует,
+        // что никто не изменит файл, пока мы его читаем и готовимся писать.
+        if (!flock($fp, LOCK_EX)) {
             fclose($fp);
-
             return false;
         }
 

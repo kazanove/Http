@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace CodeX\Http\Response;
@@ -9,8 +10,9 @@ class Header
 
     public function set(string $name, string $value): void
     {
-        $name = str_replace(["\r", "\n", "\t"], '', $name);
-        $value = str_replace(["\r", "\n", "\t"], '', $value);
+        // Используем chr() для соблюдения правила одинарных кавычек
+        $name = str_replace([chr(13), chr(10), chr(9)], '', $name);
+        $value = str_replace([chr(13), chr(10), chr(9)], '', $value);
 
         $normalizedName = $this->normalizeName($name);
 
@@ -44,7 +46,6 @@ class Header
 
     private function normalizeName(string $name): string
     {
-        // Использование Pipe Operator (PHP 8.5)
         return $name
                 |> strtolower(...)
                 |> (static fn($x) => str_replace(['-', '_'], ' ', $x))

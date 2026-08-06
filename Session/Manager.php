@@ -18,9 +18,7 @@ class Manager
     private array $config;
     private bool $started = false;
 
-    // ИСПОЛЬЗОВАНО: Асимметричная видимость (PHP 8.4) вместо избыточного хука get
     private(set) string|false $id = false;
-
     private ?Container $container;
 
     public function __construct(array $config = [], ?Container $container = null)
@@ -82,9 +80,15 @@ class Manager
         $this->id = session_id();
 
         if (!isset($_SESSION['_initialized'])) {
-            session_regenerate_id();
-            $this->id = session_id();
-            $_SESSION['_initialized'] = true;
+            if (session_regenerate_id(true)) {
+                $this->id = session_id();
+                $_SESSION['_initialized'] = true;
+            } else {
+                error_log('Не удалось регенерировать ID сессии при инициализации.');
+                // Все равно помечаем как инициализированную, чтобы не пытаться
+                // регенерировать при каждом запросе, если драйвер это не поддерживает.
+                $_SESSION['_initialized'] = true;
+            }
         }
 
         $last = $this->get('last_activity', 0);

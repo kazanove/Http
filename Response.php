@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace CodeX\Http;
 
-use CodeX\Http\Exception\RedirectException;
+use CodeX\Http\Exception\Redirect;
 use CodeX\Http\Response\Cookie;
 use CodeX\Http\Response\Header;
 use InvalidArgumentException;
@@ -57,7 +57,7 @@ class Response
     {
         $uri = $this->normalizeRedirectUri($uri);
 
-        throw new RedirectException($uri, $statusCode);
+        throw new Redirect($uri, $statusCode);
     }
 
     public function send(): self
