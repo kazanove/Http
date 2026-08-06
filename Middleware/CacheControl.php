@@ -46,8 +46,7 @@ class CacheControl
     {
         $result = $next($params);
 
-        // ИСПРАВЛЕНО: Ожидаем Response. Если ядро вернуло строку, оборачиваем её.
-        // Убран Service Locator (Container::getInstance).
+        // Ожидаем Response. Если ядро вернуло строку, оборачиваем её.
         if (!$result instanceof Response) {
             $response = new Response();
             $response->content = (string) $result;
@@ -55,16 +54,20 @@ class CacheControl
             $response = $result;
         }
 
-        // ИСПРАВЛЕНО: getUri() уже возвращает чистый путь (string).
-        // Метод extractPath и работа с Uri-объектами здесь не нужны.
-        $path = $request->getUri();
-        // Примечание: Если Request не передается в $params, его нужно получить из контейнера
-        // или передать в мидлвар. Здесь предполагается, что $params[0] это Request.
+        // ИСПРАВЛЕНО: Сначала безопасно извлекаем Request из параметров,
+        // и только затем используем его для получения URI.
         $request = $params[0] ?? null;
-        if ($request instanceof Request) {
-            $path = $request->getUri();
+
+        if (!$request instanceof Request) {
+            // Если ваш роутер не передает Request в $params[0],
+            // его следует внедрять через конструктор мидлвара.
+            throw new \InvalidArgumentException(
+                'Объект Request не найден в параметрах мидлвара CacheControl.'
+            );
         }
 
+        // getUri() уже возвращает очищенный путь (string)
+        $path = $request->getUri();
         $contentType = $response->header->get('Content-Type') ?? 'text/html';
 
         if ($this->isStaticAsset($path, $contentType)) {
@@ -79,7 +82,6 @@ class CacheControl
 
         return $response;
     }
-
     private function isStaticAsset(string $path, string $contentType): bool
     {
         $staticExtensions = ['css', 'js', 'jpg', 'jpeg', 'png', 'gif', 'svg', 'webp', 'woff', 'woff2', 'ttf', 'ico'];
