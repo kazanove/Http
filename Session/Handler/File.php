@@ -7,18 +7,18 @@ namespace CodeX\Http\Session\Handler;
 use RuntimeException;
 use SessionHandlerInterface;
 
+/**
+ * Файловый обработчик сессий.
+ */
 class File implements SessionHandlerInterface
 {
     /**
-     * Путь к директории хранения сессий.
+     * Директория хранения сессий.
      */
     private readonly string $path;
 
     /**
      * Резервное время жизни сессии.
-     *
-     * Используется в gc(), если по какой-то причине
-     * $max_lifetime пришёл некорректным.
      */
     private readonly int $lifetime;
 
@@ -41,13 +41,11 @@ class File implements SessionHandlerInterface
 
     public function open(string $path, string $name): bool
     {
-        // Параметры обязательны интерфейсом SessionHandlerInterface.
         return true;
     }
 
     public function close(): bool
     {
-        // ИСПРАВЛЕНО: убран неиспользуемый ключ $id.
         foreach ($this->locks as $fp) {
             flock($fp, LOCK_UN);
             fclose($fp);
@@ -76,11 +74,9 @@ class File implements SessionHandlerInterface
             return false;
         }
 
-        // ИЗМЕНЕНО: Сразу используем LOCK_EX вместо LOCK_SH.
-        // Это предотвращает проблемы с повышением блокировки и гарантирует,
-        // что никто не изменит файл, пока мы его читаем и готовимся писать.
         if (!flock($fp, LOCK_EX)) {
             fclose($fp);
+
             return false;
         }
 
@@ -188,14 +184,13 @@ class File implements SessionHandlerInterface
     }
 
     /**
-     * Возвращает полный путь к файлу сессии.
+     * Возвращает путь к файлу сессии.
      *
-     * Дополнительно защищает от попытки передачи
-     * символов перехода по каталогам в идентификаторе.
+     * Запрещает любые символы, которые могут привести к path traversal.
      */
     private function filePath(string $id): string|false
     {
-        if ($id === '' || preg_match('~[/\\\\]~', $id) === 1) {
+        if ($id === '' || preg_match('/^[A-Za-z0-9,\-]{1,128}$/', $id) !== 1) {
             return false;
         }
 

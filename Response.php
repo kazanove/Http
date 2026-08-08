@@ -7,8 +7,21 @@ namespace CodeX\Http;
 use CodeX\Http\Exception\Redirect;
 use CodeX\Http\Response\Cookie;
 use CodeX\Http\Response\Header;
+use finfo;
 use InvalidArgumentException;
+use JsonException;
+use RuntimeException;
 
+/**
+ * HTTP-ответ.
+ *
+ * Поддерживает:
+ * - обычные ответы;
+ * - JSON-ответы;
+ * - редиректы через исключение;
+ * - отправку файлов;
+ * - Early Hints / preload через заголовок Link.
+ */
 class Response
 {
     public readonly Header $header;
@@ -17,18 +30,22 @@ class Response
     /**
      * Тело ответа.
      *
-     * При установке автоматически выполняется trim().
+     * Хук свойства PHP 8.4 автоматически убирает лишние пробелы по краям.
      */
     public string $content = '' {
         set => trim($value);
     }
 
     /**
-     * HTTP-статус ответа.
-     *
-     * Чтение доступно извне, изменение — только внутри класса.
+     * Код ответа доступен для чтения снаружи,
+     * но изменяется только внутри класса.
      */
-    public private(set) int $statusCode = 200;
+    private(set) int $statusCode = 200;
+
+    /**
+     * Путь к файлу, если ответ должен отправить файл.
+     */
+    private ?string $filePath = null;
 
     public function __construct()
     {
@@ -36,6 +53,9 @@ class Response
         $this->cookies = new Cookie();
     }
 
+    /**
+     * Устанавливает HTTP-статус.
+     */
     public function setStatus(int $code): void
     {
         if ($code < 100 || $code > 599) {
@@ -50,8 +70,8 @@ class Response
     /**
      * Подготавливает редирект.
      *
-     * Вместо exit выбрасывается RedirectException,
-     * который должно перехватить HTTP-ядро приложения.
+     * Вместо exit выбрасывается исключение,
+     * которое должно быть обработано HTTP-ядром приложения.
      */
     public function redirect(string $uri, int $statusCode = 302): never
     {
@@ -60,6 +80,134 @@ class Response
         throw new Redirect($uri, $statusCode);
     }
 
+    /**
+     * Подготавливает JSON-ответ.
+     */
+    public function json(mixed $data, int $statusCode = 200): self
+    {
+        $this->setStatus($statusCode);
+
+        $this->header->set('Content-Type', 'application/json; charset=utf-8');
+
+        try {
+            $this->content = json_encode(
+                $data,
+                JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+            );
+        } catch (JsonException $e) {
+            throw new RuntimeException('Не удалось сериализовать ответ в JSON.', 0, $e);
+        }
+
+        return $this;
+    }
+
+    /**
+     * Добавляет заголовок Link для preload/preconnect.
+     *
+     * Используется для оптимизации HTTP/2+ и современных браузеров.
+     */
+    public function addLink(
+        string $uri,
+        string $rel = 'preload',
+        string $as = '',
+        string $type = ''
+    ): self {
+        $link = '<'.$uri.'>; rel='.$rel;
+
+        if ($as !== '') {
+            $link .= '; as='.$as;
+        }
+
+        if ($type !== '') {
+            $link .= '; type='.$type;
+        }
+
+        if (!headers_sent()) {
+            header('Link: ' . $link, false);
+        }
+
+        $this->header->set('Link', $link);
+
+        return $this;
+    }
+
+    /**
+     * Отправляет 103 Early Hints, если сервер/SAPI это поддерживает.
+     *
+     * Обычно вызывается после добавления Link-заголовков.
+     */
+    public function sendEarlyHints(): void
+    {
+        if ( PHP_SAPI === 'cli' || headers_sent()) {
+            return;
+        }
+
+        header('HTTP/1.1 103 Early Hints');
+
+        foreach ($this->header->all() as $name => $value) {
+            if (strtolower($name) === 'link') {
+                header('Link: ' . $value, false);
+            }
+        }
+
+        if (ob_get_level() > 0) {
+            ob_flush();
+        }
+
+        flush();
+    }
+
+    /**
+     * Подготавливает ответ файлом.
+     *
+     * @param string $path Путь к файлу.
+     * @param string|null $downloadName Имя файла для клиента.
+     * @param bool $inline true — открыть в браузере, false — скачать.
+     * @param string|null $allowedBaseDir Ограничивает выдачу файлов разрешённой директорией.
+     */
+    public function download(
+        string $path,
+        ?string $downloadName = null,
+        bool $inline = false,
+        ?string $allowedBaseDir = null
+    ): self {
+        $realPath = $this->resolveSafeFilePath($path, $allowedBaseDir);
+
+        if (!is_readable($realPath)) {
+            throw new RuntimeException('Файл недоступен для чтения.');
+        }
+
+        $fileSize = filesize($realPath);
+
+        if ($fileSize === false) {
+            throw new RuntimeException('Не удалось определить размер файла.');
+        }
+
+        $finfo = new finfo(FILEINFO_MIME_TYPE);
+        $mime = $finfo->file($realPath) ?: 'application/octet-stream';
+
+        $filename = $downloadName ?? basename($realPath);
+        $fallback = preg_replace('/[^\x20-\x7e]/', '_', $filename) ?: 'file';
+        $fallback = str_replace(['"', '\\'], '', $fallback);
+
+        $disposition = $inline ? 'inline' : 'attachment';
+
+        $this->filePath = $realPath;
+
+        $this->header->set('Content-Type', $mime);
+        $this->header->set('Content-Length', (string)$fileSize);
+        $this->header->set('Accept-Ranges', 'bytes');
+        $filename
+            |> rawurlencode(...)
+            |> (static fn($x) => sprintf('%s; filename="%s"; filename*=UTF-8\'\'%s', $disposition, $fallback, $x))
+            |> (fn($x) => $this->header->set('Content-Disposition', $x));
+
+        return $this;
+    }
+
+    /**
+     * Отправляет ответ клиенту.
+     */
     public function send(): self
     {
         while (ob_get_level() > 0) {
@@ -71,7 +219,11 @@ class Response
                 'Заголовки уже отправлены в файле ' . $filename . ' на строке ' . $line
             );
 
-            echo $this->content;
+            if ($this->filePath !== null) {
+                readfile($this->filePath);
+            } else {
+                echo $this->content;
+            }
 
             return $this;
         }
@@ -101,7 +253,12 @@ class Response
 
         header_remove('X-Powered-By');
 
-        echo $this->content;
+        if ($this->filePath !== null) {
+            readfile($this->filePath);
+            $this->filePath = null;
+        } else {
+            echo $this->content;
+        }
 
         return $this;
     }
@@ -110,10 +267,8 @@ class Response
      * Нормализует URI для редиректа.
      *
      * Разрешены:
-     * - относительные пути вида /profile, profile, /admin/dashboard;
-     * - абсолютные HTTPS-ссылки.
-     *
-     * Абсолютные ссылки с небезопасной схемой запрещены.
+     * - относительные пути;
+     * - абсолютные HTTPS-адреса.
      */
     private function normalizeRedirectUri(string $uri): string
     {
@@ -123,9 +278,12 @@ class Response
             return '/';
         }
 
+        if (parse_url($uri) === false) {
+            return '/';
+        }
+
         $scheme = parse_url($uri, PHP_URL_SCHEME);
 
-        // Если указана схема, значит ссылка абсолютная.
         if (is_string($scheme)) {
             if (strtolower($scheme) !== 'https') {
                 throw new InvalidArgumentException(
@@ -136,7 +294,6 @@ class Response
             return $uri;
         }
 
-        // Protocol-relative ссылки вида //example.com/path потенциально опасны.
         if (str_starts_with($uri, '//')) {
             throw new InvalidArgumentException(
                 'Protocol-relative URI для редиректа запрещены.'
@@ -144,5 +301,35 @@ class Response
         }
 
         return '/' . ltrim($uri, '/');
+    }
+
+    /**
+     * Проверяет путь к файлу и защищает от выхода за пределы разрешённой директории.
+     */
+    private function resolveSafeFilePath(string $path, ?string $allowedBaseDir = null): string
+    {
+        if (str_contains($path, "\0")) {
+            throw new InvalidArgumentException('Недопустимый путь к файлу.');
+        }
+
+        $realPath = realpath($path);
+
+        if ($realPath === false) {
+            throw new RuntimeException('Файл не найден.');
+        }
+
+        if ($allowedBaseDir !== null) {
+            $baseDir = realpath($allowedBaseDir);
+
+            if ($baseDir === false) {
+                throw new RuntimeException('Разрешённая директория для файлов не найдена.');
+            }
+
+            if (!str_starts_with($realPath, $baseDir . DIRECTORY_SEPARATOR)) {
+                throw new RuntimeException('Доступ к файлу вне разрешённой директории запрещён.');
+            }
+        }
+
+        return $realPath;
     }
 }

@@ -4,13 +4,19 @@ declare(strict_types=1);
 
 namespace CodeX\Http\Response;
 
+/**
+ * Хранилище HTTP-заголовков ответа.
+ */
 class Header
 {
     private array $parameters = [];
 
+    /**
+     * Устанавливает заголовок.
+     * Удаляет управляющие символы для защиты от HTTP Response Splitting.
+     */
     public function set(string $name, string $value): void
     {
-        // Используем chr() для соблюдения правила одинарных кавычек
         $name = str_replace([chr(13), chr(10), chr(9)], '', $name);
         $value = str_replace([chr(13), chr(10), chr(9)], '', $value);
 
@@ -44,12 +50,15 @@ class Header
         $this->parameters = [];
     }
 
+    /**
+     * Приводит имя заголовка к формату X-Frame-Options.
+     */
     private function normalizeName(string $name): string
     {
-        return $name
-                |> strtolower(...)
-                |> (static fn($x) => str_replace(['-', '_'], ' ', $x))
-                |> ucwords(...)
-                |> (static fn($x) => str_replace(' ', '-', $x));
+        $name = strtolower($name);
+        $name = str_replace(['-', '_'], ' ', $name);
+        $name = ucwords($name);
+
+        return str_replace(' ', '-', $name);
     }
 }

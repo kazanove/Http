@@ -1,28 +1,35 @@
 <?php
+
 declare(strict_types=1);
 
 namespace CodeX\Http\Session\Handler;
 
-use CodeX\DataBase\Dialect\Factory;
-use CodeX\DataBase\Query\Builder;
+use InvalidArgumentException;
 use PDO;
+use PDOException;
 use SessionHandlerInterface;
-use Throwable;
 
+/**
+ * База данных для сессий.
+ *
+ * Ожидаемая структура таблицы:
+ *
+ * CREATE TABLE sessions (
+ *     id VARCHAR(128) PRIMARY KEY,
+ *     data TEXT NOT NULL,
+ *     expires_at INT UNSIGNED NOT NULL
+ * );
+ */
 class Database implements SessionHandlerInterface
 {
-    private PDO $pdo;
-    private Builder $baseBuilder;
-    private string $table;
-    private int $lifetime;
-
-    public function __construct(PDO $pdo, string $table, int $lifetime)
-    {
-        $this->pdo = $pdo;
-        $this->table = $table;
-        $this->lifetime = $lifetime;
-        $dialect = Factory::createFromPdo($pdo);
-        $this->baseBuilder = new Builder($dialect, $pdo);
+    public function __construct(
+        private readonly PDO $pdo,
+        private readonly string $table = 'sessions',
+        private readonly int $lifetime = 1800
+    ) {
+        if (preg_match('/^[A-Za-z0-9_]+$/', $this->table) !== 1) {
+            throw new InvalidArgumentException('Недопустимое имя таблицы сессий.');
+        }
     }
 
     public function open(string $path, string $name): bool
@@ -37,82 +44,86 @@ class Database implements SessionHandlerInterface
 
     public function read(string $id): string|false
     {
-        $builder = $this->newBuilder();
-        $builder->from($this->table)->select(['data'])->where('id', '=', $id)->where('last_activity', '>=', time() - $this->lifetime);
+        $stmt = $this->pdo->prepare(
+            sprintf(
+                'SELECT data FROM %s WHERE id = :id AND expires_at > :now LIMIT 1',
+                $this->table
+            )
+        );
 
-        [$sql, $bindings] = $builder->getSQL();
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->execute($bindings);
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        $stmt->execute([
+            'id' => $id,
+            'now' => time(),
+        ]);
 
-        return $row ? $row['data'] : '';
-    }
+        $data = $stmt->fetchColumn();
 
-    private function newBuilder(): Builder
-    {
-        return clone $this->baseBuilder;
+        return is_string($data) ? $data : '';
     }
 
     public function write(string $id, string $data): bool
     {
-        $time = time();
+        $expiresAt = time() + $this->lifetime;
 
-        $this->pdo->beginTransaction();
-        try {
-            $updateBuilder = $this->newBuilder();
-            $updateBuilder->prepareUpdate($this->table, ['data' => $data, 'last_activity' => $time])->where('id', '=', $id);
+        $update = $this->pdo->prepare(
+            sprintf(
+                'UPDATE %s SET data = :data, expires_at = :expires_at WHERE id = :id',
+                $this->table
+            )
+        );
 
-            [$sql, $bindings] = $updateBuilder->getSQL();
-            $stmt = $this->pdo->prepare($sql);
-            $stmt->execute($bindings);
+        $update->execute([
+            'data' => $data,
+            'expires_at' => $expiresAt,
+            'id' => $id,
+        ]);
 
-            if ($stmt->rowCount() === 0) {
-                $insertBuilder = $this->newBuilder();
-                $insertBuilder->prepareInsert($this->table, ['id' => $id, 'data' => $data, 'last_activity' => $time]);
+        if ($update->rowCount() === 0) {
+            $insert = $this->pdo->prepare(
+                sprintf(
+                    'INSERT INTO %s (id, data, expires_at) VALUES (:id, :data, :expires_at)',
+                    $this->table
+                )
+            );
 
-                [$sql, $bindings] = $insertBuilder->getSQL();
-
-                try {
-                    $this->pdo->prepare($sql)->execute($bindings);
-                } catch (\PDOException $e) {
-                    // Код 23000 - нарушение уникальности (Integrity constraint violation).
-                    // Игнорируем ошибку, так как другой параллельный процесс уже успешно
-                    // создал запись. Данные будут обновлены при следующем запросе.
-                    if ($e->getCode() !== '23000') {
-                        throw $e;
-                    }
-                }
+            try {
+                $insert->execute([
+                    'id' => $id,
+                    'data' => $data,
+                    'expires_at' => $expiresAt,
+                ]);
+            } catch (PDOException) {
+                // Возможна гонка при параллельной записи.
+                // Повторно обновляем уже существующую запись.
+                $update->execute([
+                    'data' => $data,
+                    'expires_at' => $expiresAt,
+                    'id' => $id,
+                ]);
             }
-
-            $this->pdo->commit();
-            return true;
-        } catch (\Throwable $e) {
-            $this->pdo->rollBack();
-            error_log('Ошибка записи сессии в БД: ' . $e->getMessage());
-            return false;
         }
+
+        return true;
     }
 
     public function destroy(string $id): bool
     {
-        $builder = $this->newBuilder();
-        $builder->prepareDelete($this->table)->where('id', '=', $id);
+        $stmt = $this->pdo->prepare(
+            sprintf('DELETE FROM %s WHERE id = :id', $this->table)
+        );
 
-        [$sql, $bindings] = $builder->getSQL();
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->execute($bindings);
+        $stmt->execute(['id' => $id]);
 
-        return $stmt->rowCount() > 0;
+        return true;
     }
 
     public function gc(int $max_lifetime): int|false
     {
-        $builder = $this->newBuilder();
-        $builder->prepareDelete($this->table)->where('last_activity', '<', time() - $max_lifetime);
+        $stmt = $this->pdo->prepare(
+            sprintf('DELETE FROM %s WHERE expires_at < :now', $this->table)
+        );
 
-        [$sql, $bindings] = $builder->getSQL();
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->execute($bindings);
+        $stmt->execute(['now' => time()]);
 
         return $stmt->rowCount();
     }

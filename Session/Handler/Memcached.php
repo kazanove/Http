@@ -1,31 +1,39 @@
 <?php
+
 declare(strict_types=1);
 
 namespace CodeX\Http\Session\Handler;
 
+use Memcached as PhpMemcached;
 use SessionHandlerInterface;
 
-class Memcached implements SessionHandlerInterface
+/**
+ * Memcached-обработчик сессий.
+ */
+readonly class Memcached implements SessionHandlerInterface
 {
-    private \Memcached $memcached;
-    private int $lifetime;
-    private string $prefix;
-
-    public function __construct(\Memcached $memcached, int $lifetime, string $prefix = 'codex_session:')
-    {
-        $this->memcached = $memcached;
-        $this->lifetime = $lifetime;
-        $this->prefix = $prefix;
+    public function __construct(
+        private PhpMemcached $memcached,
+        private int          $lifetime = 1800,
+        private string       $prefix = 'codex_session:'
+    ) {
     }
 
-    public function open(string $path, string $name): bool { return true; }
-    public function close(): bool { return true; }
+    public function open(string $path, string $name): bool
+    {
+        return true;
+    }
+
+    public function close(): bool
+    {
+        return true;
+    }
 
     public function read(string $id): string|false
     {
         $data = $this->memcached->get($this->prefix . $id);
 
-        if ($this->memcached->getResultCode() === \Memcached::RES_NOTFOUND) {
+        if ($this->memcached->getResultCode() === PhpMemcached::RES_NOTFOUND) {
             return '';
         }
 
@@ -42,5 +50,9 @@ class Memcached implements SessionHandlerInterface
         return $this->memcached->delete($this->prefix . $id);
     }
 
-    public function gc(int $max_lifetime): int|false { return 0; }
+    public function gc(int $max_lifetime): int|false
+    {
+        // Memcached сам удаляет ключи по TTL.
+        return 0;
+    }
 }

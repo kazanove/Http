@@ -1,42 +1,33 @@
 <?php
+
 declare(strict_types=1);
 
 namespace CodeX\Http\Request;
 
+/**
+ * Заголовки HTTP-запроса.
+ */
 class Header
 {
     private array $parameters;
 
-    public function __construct()
+    public function __construct(?array $server = null)
     {
-        if (PHP_SAPI !== 'cli' && function_exists('apache_request_headers')) {
-            $headers = apache_request_headers();
-            if ($headers !== false) {
+        $server ??= $_SERVER;
+
+        if (PHP_SAPI !== 'cli' && function_exists('getallheaders')) {
+            $headers = getallheaders();
+
+            if (is_array($headers)) {
                 foreach ($headers as $name => $value) {
-                    $this->parameters[$this->normalizeName($name)] = $value;
+                    $this->parameters[$this->normalizeName((string)$name)] = (string)$value;
                 }
+
                 return;
             }
         }
 
-        $this->parameters = $this->normalizeFromServer($_SERVER);
-    }
-
-    private function normalizeFromServer(array $source): array
-    {
-        $headers = [];
-        foreach ($source as $key => $value) {
-            if (str_starts_with($key, 'HTTP_')) {
-                $name = substr($key, 5)
-                        |> strtolower(...)
-                        |> (static fn($x) => str_replace('_', '-', $x))
-                        |> (fn($x) => $this->normalizeName($x));
-                $headers[$name] = (string)$value;
-            } elseif (in_array($key, ['CONTENT_TYPE', 'CONTENT_LENGTH'], true)) {
-                $headers[$this->normalizeName($key)] = (string)$value;
-            }
-        }
-        return $headers;
+        $this->parameters = $this->normalizeFromServer($server);
     }
 
     public function get(string $key): ?string
@@ -54,12 +45,32 @@ class Header
         return $this->parameters;
     }
 
+    private function normalizeFromServer(array $source): array
+    {
+        $headers = [];
+
+        foreach ($source as $key => $value) {
+            if (str_starts_with((string)$key, 'HTTP_')) {
+                $name = substr((string)$key, 5);
+                $name = strtolower($name);
+                $name = str_replace('_', '-', $name);
+                $name = $this->normalizeName($name);
+
+                $headers[$name] = (string)$value;
+            } elseif (in_array($key, ['CONTENT_TYPE', 'CONTENT_LENGTH'], true)) {
+                $headers[$this->normalizeName($key)] = (string)$value;
+            }
+        }
+
+        return $headers;
+    }
+
     private function normalizeName(string $name): string
     {
-        return $name
-                |> strtolower(...)
-                |> (static fn($x) => str_replace(['-', '_'], ' ', $x))
-                |> ucwords(...)
-                |> (static fn($x) => str_replace(' ', '-', $x));
+        $name = strtolower($name);
+        $name = str_replace(['-', '_'], ' ', $name);
+        $name = ucwords($name);
+
+        return str_replace(' ', '-', $name);
     }
 }

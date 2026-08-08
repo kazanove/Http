@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace CodeX\Http\Session;
@@ -12,65 +13,73 @@ use PDO;
 use RuntimeException;
 use Throwable;
 
+/**
+ * Менеджер сессий.
+ */
 class Manager
 {
     private string $driver;
     private array $config;
     private bool $started = false;
 
+    /**
+     * ID сессии доступен для чтения,
+     * но изменяется только внутри менеджера.
+     */
     private(set) string|false $id = false;
-    private ?Container $container;
 
-    public function __construct(array $config = [], ?Container $container = null)
-    {
-        $this->container = $container;
+    public function __construct(
+        array $config = [],
+        private readonly ?Container $container = null
+    ) {
         $this->driver = strtolower($config['driver'] ?? 'native');
         $this->config = $config[$this->driver] ?? [];
+
         $this->configureSessionIni();
-    }
-
-    private function configureSessionIni(): void
-    {
-        $lifetime = $this->config['lifetime'] ?? 1800;
-
-        ini_set('session.gc_maxlifetime', (string)$lifetime);
-        ini_set('session.use_strict_mode', '1');
-        ini_set('session.use_trans_sid', '0');
-        ini_set('session.cookie_httponly', '1');
-
-        $isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https');
-        ini_set('session.cookie_secure', $isHttps ? '1' : '0');
-
-        ini_set('session.cookie_samesite', 'Strict');
-        ini_set('session.lazy_write', '1');
-
-        if ($this->driver !== 'native') {
-            ini_set('session.gc_probability', '0');
-            ini_set('session.gc_divisor', '1');
-        }
     }
 
     public function has(string $key): bool
     {
         $this->ensureStarted();
+
         return isset($_SESSION[$key]);
     }
 
-    private function ensureStarted(): void
+    public function get(string $key, mixed $default = null): mixed
     {
-        if (!$this->started) {
-            $this->start();
-        }
+        $this->ensureStarted();
+
+        return $_SESSION[$key] ?? $default;
     }
 
+    public function set(string $key, mixed $value): void
+    {
+        $this->ensureStarted();
+
+        $_SESSION[$key] = $value;
+    }
+
+    public function delete(string $key): void
+    {
+        $this->ensureStarted();
+
+        unset($_SESSION[$key]);
+    }
+
+    /**
+     * Запускает сессию.
+     */
     public function start(): bool
     {
         if ($this->started || session_status() === PHP_SESSION_ACTIVE) {
             $this->started = true;
+            $this->id = session_id() ?: false;
+
             return true;
         }
 
         $this->registerDriver();
+
         $this->started = session_start();
 
         if (!$this->started) {
@@ -82,13 +91,10 @@ class Manager
         if (!isset($_SESSION['_initialized'])) {
             if (session_regenerate_id(true)) {
                 $this->id = session_id();
-                $_SESSION['_initialized'] = true;
             } else {
                 error_log('Не удалось регенерировать ID сессии при инициализации.');
-                // Все равно помечаем как инициализированную, чтобы не пытаться
-                // регенерировать при каждом запросе, если драйвер это не поддерживает.
-                $_SESSION['_initialized'] = true;
             }
+            $_SESSION['_initialized'] = true;
         }
 
         $last = $this->get('last_activity', 0);
@@ -96,92 +102,38 @@ class Manager
 
         if ($last > 0 && (time() - $last) > $lifetime) {
             $this->destroy();
+
             return false;
         }
 
         $this->set('last_activity', time());
+
         return true;
     }
 
-    private function registerDriver(): void
-    {
-        $handler = match ($this->driver) {
-            'db' => $this->createDbHandler(),
-            'redis' => $this->createRedisHandler(),
-            'memcached' => $this->createMemcachedHandler(),
-            'files' => $this->createFilesHandler(),
-            'native' => null,
-            default => throw new RuntimeException('Неподдерживаемый драйвер сессии: ' . $this->driver)
-        };
-
-        if ($handler !== null) {
-            session_set_save_handler($handler, true);
-        }
-    }
-
-    private function createDbHandler(): Database
-    {
-        $pdo = $this->config['pdo'] ?? null;
-
-        if (!$pdo instanceof PDO && $this->container !== null) {
-            try {
-                $pdo = $this->container->make(PDO::class);
-            } catch (Throwable) {
-                // Игнорируем, выбросим ошибку ниже
-            }
-        }
-
-        if (!$pdo instanceof PDO) {
-            throw new RuntimeException('Для драйвера "db" необходим экземпляр PDO.');
-        }
-
-        return new Database($pdo, $this->config['table'] ?? 'sessions', $this->config['lifetime'] ?? 1800);
-    }
-
-    private function createRedisHandler(): Redis
-    {
-        if (!class_exists(\Redis::class)) {
-            throw new RuntimeException('Расширение Redis (phpredis) не установлено.');
-        }
-
-        $redis = new \Redis();
-        $redis->connect($this->config['host'] ?? '127.0.0.1', (int)($this->config['port'] ?? 6379), (float)($this->config['timeout'] ?? 0.0));
-
-        if (!empty($this->config['password'])) {
-            $redis->auth($this->config['password']);
-        }
-
-        if (isset($this->config['database'])) {
-            $redis->select((int)$this->config['database']);
-        }
-
-        return new Redis($redis, $this->config['lifetime'] ?? 1800, $this->config['prefix'] ?? 'codex_session:');
-    }
-
-    private function createMemcachedHandler(): Memcached
-    {
-        if (!class_exists(\Memcached::class)) {
-            throw new RuntimeException('Расширение Memcached не установлено.');
-        }
-
-        $mc = new \Memcached();
-        $mc->addServer($this->config['host'] ?? '127.0.0.1', (int)($this->config['port'] ?? 11211));
-
-        return new Memcached($mc, $this->config['lifetime'] ?? 1800, $this->config['prefix'] ?? 'codex_session:');
-    }
-
-    private function createFilesHandler(): File
-    {
-        $path = $this->config['path'] ?? sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'codex_sessions';
-        return new File($path, $this->config['lifetime'] ?? 1800);
-    }
-
-    public function get(string $key, mixed $default = null): mixed
+    /**
+     * Регенерирует ID сессии.
+     */
+    public function regenerate(bool $deleteOldSession = true): bool
     {
         $this->ensureStarted();
-        return $_SESSION[$key] ?? $default;
+
+        if (session_status() !== PHP_SESSION_ACTIVE) {
+            return false;
+        }
+
+        $result = session_regenerate_id($deleteOldSession);
+
+        if ($result) {
+            $this->id = session_id();
+        }
+
+        return $result;
     }
 
+    /**
+     * Полностью уничтожает сессию.
+     */
     public function destroy(): void
     {
         $_SESSION = [];
@@ -204,37 +156,30 @@ class Manager
         }
 
         $this->started = false;
+        $this->id = false;
     }
 
-    public function set(string $key, mixed $value): void
-    {
-        $this->ensureStarted();
-        $_SESSION[$key] = $value;
-    }
-
-    public function regenerate(bool $deleteOldSession = true): bool
+    /**
+     * Добавляет flash-сообщение.
+     */
+    public function addFlash(string $type, string $message): void
     {
         $this->ensureStarted();
 
-        if (session_status() !== PHP_SESSION_ACTIVE) {
-            return false;
+        $flash = $_SESSION['_flash'] ?? [];
+
+        if (!is_array($flash)) {
+            $flash = [];
         }
 
-        $result = session_regenerate_id($deleteOldSession);
+        $flash[$type][] = $message;
 
-        if ($result) {
-            $this->id = session_id();
-        }
-
-        return $result;
+        $_SESSION['_flash'] = $flash;
     }
 
-    public function delete(string $key): void
-    {
-        $this->ensureStarted();
-        unset($_SESSION[$key]);
-    }
-
+    /**
+     * Получает flash-сообщения и удаляет их из сессии.
+     */
     public function getFlash(?string $type = null): array
     {
         $this->ensureStarted();
@@ -247,7 +192,6 @@ class Manager
             return [];
         }
 
-        // Если тип не указан, возвращаем все flash-сообщения.
         if ($type === null) {
             unset($_SESSION['_flash']);
 
@@ -271,6 +215,9 @@ class Manager
         return is_array($messages) ? $messages : [$messages];
     }
 
+    /**
+     * Проверяет наличие flash-сообщений.
+     */
     public function hasFlash(?string $type = null): bool
     {
         $this->ensureStarted();
@@ -298,18 +245,136 @@ class Manager
         return $messages !== null;
     }
 
-    public function addFlash(string $type, string $message): void
+    /**
+     * Автоматически запускает сессию при первом обращении.
+     */
+    private function ensureStarted(): void
     {
-        $this->ensureStarted();
+        if (!$this->started) {
+            $this->start();
+        }
+    }
 
-        $flash = $_SESSION['_flash'] ?? [];
+    /**
+     * Настраивает безопасные параметры сессии.
+     */
+    private function configureSessionIni(): void
+    {
+        $lifetime = $this->config['lifetime'] ?? 1800;
 
-        if (!is_array($flash)) {
-            $flash = [];
+        ini_set('session.gc_maxlifetime', (string)$lifetime);
+        ini_set('session.use_strict_mode', '1');
+        ini_set('session.use_trans_sid', '0');
+        ini_set('session.cookie_httponly', '1');
+
+        $isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+            || (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https');
+
+        ini_set('session.cookie_secure', $isHttps ? '1' : '0');
+        ini_set('session.cookie_samesite', 'Strict');
+        ini_set('session.lazy_write', '1');
+
+        if ($this->driver !== 'native') {
+            ini_set('session.gc_probability', '0');
+            ini_set('session.gc_divisor', '1');
+        }
+    }
+
+    /**
+     * Регистрирует выбранный драйвер сессий.
+     */
+    private function registerDriver(): void
+    {
+        $handler = match ($this->driver) {
+            'db' => $this->createDbHandler(),
+            'redis' => $this->createRedisHandler(),
+            'memcached' => $this->createMemcachedHandler(),
+            'files' => $this->createFilesHandler(),
+            'native' => null,
+            default => throw new RuntimeException('Неподдерживаемый драйвер сессии: ' . $this->driver),
+        };
+
+        if ($handler !== null) {
+            session_set_save_handler($handler, true);
+        }
+    }
+
+    private function createDbHandler(): Database
+    {
+        $pdo = $this->config['pdo'] ?? null;
+
+        if (!$pdo instanceof PDO && $this->container !== null) {
+            try {
+                $pdo = $this->container->make(PDO::class);
+            } catch (Throwable) {
+                // Ошибка будет выброшена ниже.
+            }
         }
 
-        $flash[$type][] = $message;
+        if (!$pdo instanceof PDO) {
+            throw new RuntimeException('Для драйвера "db" необходим экземпляр PDO.');
+        }
 
-        $_SESSION['_flash'] = $flash;
+        return new Database(
+            $pdo,
+            $this->config['table'] ?? 'sessions',
+            $this->config['lifetime'] ?? 1800
+        );
+    }
+
+    private function createRedisHandler(): Redis
+    {
+        if (!class_exists(\Redis::class)) {
+            throw new RuntimeException('Расширение Redis не установлено.');
+        }
+
+        $redis = new \Redis();
+
+        $redis->connect(
+            $this->config['host'] ?? '127.0.0.1',
+            (int)($this->config['port'] ?? 6379),
+            (float)($this->config['timeout'] ?? 0.0)
+        );
+
+        if (!empty($this->config['password'])) {
+            $redis->auth($this->config['password']);
+        }
+
+        if (isset($this->config['database'])) {
+            $redis->select((int)$this->config['database']);
+        }
+
+        return new Redis(
+            $redis,
+            $this->config['lifetime'] ?? 1800,
+            $this->config['prefix'] ?? 'codex_session:'
+        );
+    }
+
+    private function createMemcachedHandler(): Memcached
+    {
+        if (!class_exists(\Memcached::class)) {
+            throw new RuntimeException('Расширение Memcached не установлено.');
+        }
+
+        $memcached = new \Memcached();
+
+        $memcached->addServer(
+            $this->config['host'] ?? '127.0.0.1',
+            (int)($this->config['port'] ?? 11211)
+        );
+
+        return new Memcached(
+            $memcached,
+            $this->config['lifetime'] ?? 1800,
+            $this->config['prefix'] ?? 'codex_session:'
+        );
+    }
+
+    private function createFilesHandler(): File
+    {
+        $path = $this->config['path'] ?? sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'codex_sessions';
+
+        return new File($path, $this->config['lifetime'] ?? 1800);
     }
 }

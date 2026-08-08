@@ -6,8 +6,12 @@ namespace CodeX\Http\Middleware;
 
 use CodeX\Http\Request;
 use CodeX\Http\Response;
+use JsonException;
 
-class CacheControl
+/**
+ * Управляет заголовками Cache-Control.
+ */
+class CacheControl implements Middleware
 {
     private array $config;
 
@@ -20,7 +24,7 @@ class CacheControl
                 'public' => false,
             ],
             'static' => [
-                'max_age' => 31536000, // 1 год
+                'max_age' => 31536000,
                 'immutable' => true,
                 'public' => true,
             ],
@@ -37,36 +41,32 @@ class CacheControl
         ], $config);
     }
 
-    /**
-     * @param array $params
-     * @param callable $next
-     * @return Response
-     */
-    public function handle(array $params, callable $next): Response
+    public function handle(Request $request, callable $next): Response
     {
-        $result = $next($params);
+        $result = $next($request);
 
-        // Ожидаем Response. Если ядро вернуло строку, оборачиваем её.
-        if (!$result instanceof Response) {
-            $response = new Response();
-            $response->content = (string) $result;
-        } else {
+        if ($result instanceof Response) {
             $response = $result;
+        } else {
+            $response = new Response();
+
+            if ($result === null) {
+                $response->content = '';
+            } elseif (is_scalar($result)) {
+                $response->content = (string)$result;
+            } else {
+                try {
+                    $response->content = json_encode($result, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
+                    $response->header->set('Content-Type', 'application/json; charset=utf-8');
+                } catch (JsonException) {
+                    $response->content = '';
+                }
+            }
         }
 
-        // ИСПРАВЛЕНО: Сначала безопасно извлекаем Request из параметров,
-        // и только затем используем его для получения URI.
-        $request = $params[0] ?? null;
+        // Expires устарел, используем Cache-Control.
+        $response->header->remove('Expires');
 
-        if (!$request instanceof Request) {
-            // Если ваш роутер не передает Request в $params[0],
-            // его следует внедрять через конструктор мидлвара.
-            throw new \InvalidArgumentException(
-                'Объект Request не найден в параметрах мидлвара CacheControl.'
-            );
-        }
-
-        // getUri() уже возвращает очищенный путь (string)
         $path = $request->getUri();
         $contentType = $response->header->get('Content-Type') ?? 'text/html';
 
@@ -82,9 +82,24 @@ class CacheControl
 
         return $response;
     }
+
     private function isStaticAsset(string $path, string $contentType): bool
     {
-        $staticExtensions = ['css', 'js', 'jpg', 'jpeg', 'png', 'gif', 'svg', 'webp', 'woff', 'woff2', 'ttf', 'ico'];
+        $staticExtensions = [
+            'css',
+            'js',
+            'jpg',
+            'jpeg',
+            'png',
+            'gif',
+            'svg',
+            'webp',
+            'woff',
+            'woff2',
+            'ttf',
+            'ico',
+        ];
+
         $extension = strtolower(pathinfo($path, PATHINFO_EXTENSION));
 
         return in_array($extension, $staticExtensions, true)
@@ -96,14 +111,17 @@ class CacheControl
 
     private function isApiRequest(string $path): bool
     {
-        return str_starts_with($path, '/api/')
-            || str_contains($path, '.json');
+        return str_starts_with($path, '/api/') || str_contains($path, '.json');
     }
 
     private function applyStaticCache(Response $response): void
     {
         $config = $this->config['static'];
-        $directives = ['public', 'max-age=' . $config['max_age']];
+
+        $directives = [
+            'public',
+            'max-age=' . $config['max_age'],
+        ];
 
         if ($config['immutable'] ?? false) {
             $directives[] = 'immutable';
@@ -115,10 +133,11 @@ class CacheControl
     private function applyApiCache(Response $response): void
     {
         $config = $this->config['api'];
-        $directives = [];
 
-        $directives[] = ($config['public'] ?? false) ? 'public' : 'private';
-        $directives[] = 'max-age=' . $config['max_age'];
+        $directives = [
+            ($config['public'] ?? false) ? 'public' : 'private',
+            'max-age=' . $config['max_age'],
+        ];
 
         if (isset($config['stale_while_revalidate'])) {
             $directives[] = 'stale-while-revalidate=' . $config['stale_while_revalidate'];
@@ -130,30 +149,33 @@ class CacheControl
     private function applyHtmlCache(Response $response): void
     {
         $config = $this->config['html'];
+
         $directives = ['private'];
 
         if ($config['no_cache'] ?? true) {
             $directives[] = 'no-cache';
         }
+
         if ($config['no_store'] ?? true) {
             $directives[] = 'no-store';
         }
+
         if ($config['must_revalidate'] ?? true) {
             $directives[] = 'must-revalidate';
         }
 
         $response->header->set('Cache-Control', implode(', ', $directives));
-        // Pragma оставлен для обратной совместимости с HTTP/1.0
         $response->header->set('Pragma', 'no-cache');
     }
 
     private function applyDefaultCache(Response $response): void
     {
         $config = $this->config['default'];
-        $directives = [];
 
-        $directives[] = ($config['public'] ?? false) ? 'public' : 'private';
-        $directives[] = 'max-age=' . $config['max_age'];
+        $directives = [
+            ($config['public'] ?? false) ? 'public' : 'private',
+            'max-age=' . $config['max_age'],
+        ];
 
         if ($config['must_revalidate'] ?? false) {
             $directives[] = 'must-revalidate';
