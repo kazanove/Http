@@ -9,7 +9,10 @@ use CodeX\Http\Request;
 use CodeX\Http\Response;
 
 /**
- * Обработка CORS.
+ * Обработка CORS (Cross-Origin Resource Sharing).
+ *
+ * Класс отвечает за проверку Origin и установку соответствующих заголовков.
+ * Чтение Origin и определение preflight-запроса выполняются через Request.
  */
 class Cors
 {
@@ -44,7 +47,9 @@ class Cors
     public function __construct(array $config = [])
     {
         $this->allowCredentials = (bool)($config['credentials'] ?? false);
-        $this->maxAge = isset($config['max_age']) ? max(0, (int)$config['max_age']) : self::DEFAULT_MAX_AGE;
+        $this->maxAge = isset($config['max_age'])
+            ? max(0, (int)$config['max_age'])
+            : self::DEFAULT_MAX_AGE;
         $this->blockAll = (bool)($config['block_all'] ?? false);
 
         $this->allowedOrigins = $this->normalizeOrigins($config['origins'] ?? []);
@@ -54,13 +59,16 @@ class Cors
     }
 
     /**
-     * Обрабатывает CORS-запрос.
+     * Обрабатывает CORS для входящего запроса.
      *
-     * @return bool true, если это preflight-запрос и дальнейшая обработка не требуется.
+     * @return bool true, если это preflight и дальнейшая обработка маршрута не нужна.
+     *
+     * @throws AccessDenied если Origin запрещён и включён block_all.
      */
     public function handle(Request $request, Response $response): bool
     {
-        $origin = $request->headers->get('Origin');
+        // Заголовок Origin отсутствует — это обычный (не кросс-доменный) запрос.
+        $origin = $request->getOrigin();
 
         if ($origin === null) {
             return false;
@@ -76,7 +84,8 @@ class Cors
 
         $this->applyHeaders($response, $origin, $request);
 
-        if ($this->isPreflight($request)) {
+        // Для preflight достаточно вернуть 204 и заголовки, без тела.
+        if ($request->isPreflight()) {
             $response->setStatus(204);
 
             return true;
@@ -85,18 +94,52 @@ class Cors
         return false;
     }
 
+    /**
+     * Проверяет, разрешён ли метод.
+     */
+    #[\NoDiscard]
     public function isMethodAllowed(string $method): bool
     {
         return in_array(strtoupper($method), $this->allowedMethods, true);
     }
 
+    /**
+     * Проверяет, разрешён ли заголовок.
+     */
+    #[\NoDiscard]
     public function isHeaderAllowed(string $header): bool
     {
         $header = strtolower($header);
 
-        return in_array($header, array_map(strtolower(...), $this->allowedHeaders), true);
+        return in_array(
+            $header,
+            array_map(strtolower(...), $this->allowedHeaders),
+            true
+        );
     }
 
+    /**
+     * Возвращает текущую конфигурацию (для отладки/логирования).
+     */
+    public function getConfig(): array
+    {
+        return [
+            'origins' => $this->allowedOrigins,
+            'methods' => $this->allowedMethods,
+            'headers' => $this->allowedHeaders,
+            'expose_headers' => $this->exposedHeaders,
+            'credentials' => $this->allowCredentials,
+            'max_age' => $this->maxAge,
+        ];
+    }
+
+    // ------------------------------------------------------------------
+    // Внутренние методы
+    // ------------------------------------------------------------------
+
+    /**
+     * Проверяет Origin по списку разрешённых, включая шаблоны с «*».
+     */
     private function validateOrigin(string $origin): bool
     {
         if (in_array('*', $this->allowedOrigins, true)) {
@@ -111,7 +154,9 @@ class Cors
 
         foreach ($this->allowedOrigins as $pattern) {
             if (str_contains($pattern, '*')) {
-                $regex = '/^' . str_replace('\*', '.*', preg_quote($pattern, '/')) . '$/i';
+                $regex = '/^'
+                    . str_replace('\*', '.*', preg_quote($pattern, '/'))
+                    . '$/i';
 
                 if (preg_match($regex, $origin)) {
                     return true;
@@ -122,14 +167,12 @@ class Cors
         return false;
     }
 
-    private function isPreflight(Request $request): bool
-    {
-        return $request->getMethod() === 'OPTIONS'
-            && $request->headers->has('Access-Control-Request-Method');
-    }
-
+    /**
+     * Устанавливает CORS-заголовки в ответ.
+     */
     private function applyHeaders(Response $response, string $origin, Request $request): void
     {
+        // При credentials=true нельзя использовать «*» — возвращаем конкретный Origin.
         if (!$this->allowCredentials && in_array('*', $this->allowedOrigins, true)) {
             $response->header->set('Access-Control-Allow-Origin', '*');
         } else {
@@ -142,12 +185,22 @@ class Cors
         }
 
         if ($this->exposedHeaders !== []) {
-            $response->header->set('Access-Control-Expose-Headers', implode(', ', $this->exposedHeaders));
+            $response->header->set(
+                'Access-Control-Expose-Headers',
+                implode(', ', $this->exposedHeaders)
+            );
         }
 
-        if ($this->isPreflight($request)) {
-            $response->header->set('Access-Control-Allow-Methods', implode(', ', $this->allowedMethods));
-            $response->header->set('Access-Control-Allow-Headers', implode(', ', $this->allowedHeaders));
+        // Дополнительные заголовки нужны только для preflight-запросов.
+        if ($request->isPreflight()) {
+            $response->header->set(
+                'Access-Control-Allow-Methods',
+                implode(', ', $this->allowedMethods)
+            );
+            $response->header->set(
+                'Access-Control-Allow-Headers',
+                implode(', ', $this->allowedHeaders)
+            );
 
             if ($this->maxAge > 0) {
                 $response->header->set('Access-Control-Max-Age', (string)$this->maxAge);
@@ -155,6 +208,10 @@ class Cors
         }
     }
 
+    /**
+     * Нормализует список разрешённых Origin.
+     * Если присутствует «*», список сводится к единственному элементу.
+     */
     private function normalizeOrigins(array $origins): array
     {
         $clean = array_map(
@@ -171,6 +228,9 @@ class Cors
         return array_values(array_unique($clean));
     }
 
+    /**
+     * Нормализует произвольный список строк (методы, заголовки).
+     */
     private function normalizeList(array $list): array
     {
         $list = array_map(
