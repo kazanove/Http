@@ -31,13 +31,10 @@ readonly class Cookie
         return $this->params;
     }
 
-    /**
-     * Получает значение подписанной cookie.
-     */
     public function getSigned(
-        string                       $key,
+        string $key,
         #[SensitiveParameter] string $secret,
-        mixed                        $default = null
+        mixed $default = null
     ): mixed {
         $raw = $this->get($key);
 

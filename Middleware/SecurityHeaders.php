@@ -7,19 +7,22 @@ namespace CodeX\Http\Middleware;
 use CodeX\Http\Request;
 use CodeX\Http\Response;
 use CodeX\Http\Security\Context;
-use JsonException;
 
-/**
- * Добавляет безопасные HTTP-заголовки.
- */
 class SecurityHeaders implements Middleware
 {
+    use ResolvesResponse;
+    private const string CSP_SELF = "'self'";
+    private const string CSP_NONE = "'none'";
+    private const string CSP_UNSAFE_INLINE = "'unsafe-inline'";
     private array $config;
 
     public function __construct(
         private readonly Context $securityContext,
         array $config = []
     ) {
+        $self = '\'' . 'self' . '\'';
+        $none = '\'' . 'none' . '\'';
+
         $this->config = array_merge([
             'x_content_type_options' => 'nosniff',
             'x_frame_options' => 'DENY',
@@ -31,49 +34,29 @@ class SecurityHeaders implements Middleware
                 'include_subdomains' => true,
                 'preload' => false,
             ],
-            'csp' => [
+                'csp' => [
                 'enabled' => true,
                 'directives' => [
-                    'default-src' => ["'self'"],
-                    'script-src' => ["'self'"],
-                    'style-src' => ["'self'", 'https://fonts.googleapis.com'],
-                    'font-src' => ["'self'", 'https://fonts.gstatic.com'],
-                    'img-src' => ["'self'", 'data:', 'https:'],
-                    'frame-ancestors' => ["'none'"],
+                    'default-src' => [self::CSP_SELF],
+                    'script-src' => [self::CSP_SELF],
+                    'style-src' => [self::CSP_SELF, 'https://fonts.googleapis.com'],
+                    'font-src' => [self::CSP_SELF, 'https://fonts.gstatic.com'],
+                    'img-src' => [self::CSP_SELF, 'data:', 'https:'],
+                    'frame-ancestors' => [self::CSP_NONE],
                 ],
-            ],
+            ]
         ], $config);
     }
 
     public function handle(Request $request, callable $next): Response
     {
-        $result = $next($request);
+        // Используем трейт — никаких дублирований
+        $response = $this->resolveResponse($next($request));
 
-        if ($result instanceof Response) {
-            $response = $result;
-        } else {
-            $response = new Response();
-
-            if ($result === null) {
-                $response->content = '';
-            } elseif (is_scalar($result)) {
-                $response->content = (string)$result;
-            } else {
-                try {
-                    $response->content = json_encode($result, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
-                    $response->header->set('Content-Type', 'application/json; charset=utf-8');
-                } catch (JsonException) {
-                    $response->content = '';
-                }
-            }
-        }
-
-        // Удаляем устаревшие и потенциально опасные заголовки.
         $response->header->remove('X-Powered-By');
         $response->header->remove('X-XSS-Protection');
         $response->header->remove('Expires');
 
-        // Базовые заголовки безопасности.
         if (!empty($this->config['x_content_type_options'])) {
             $response->header->set('X-Content-Type-Options', $this->config['x_content_type_options']);
         }
@@ -90,7 +73,6 @@ class SecurityHeaders implements Middleware
             $response->header->set('X-Frame-Options', $this->config['x_frame_options']);
         }
 
-        // HSTS имеет смысл только для HTTPS.
         if (($this->config['hsts']['enabled'] ?? false) && $request->isHttps()) {
             $hsts = 'max-age=' . ($this->config['hsts']['max_age'] ?? 31536000);
 
@@ -105,10 +87,8 @@ class SecurityHeaders implements Middleware
             $response->header->set('Strict-Transport-Security', $hsts);
         }
 
-        // Content Security Policy с nonce вместо unsafe-inline.
         if ($this->config['csp']['enabled'] ?? false) {
             $directives = $this->config['csp']['directives'] ?? [];
-
             $nonce = $this->securityContext->getCspDirective();
 
             if (isset($directives['script-src']) && is_array($directives['script-src'])) {
@@ -131,9 +111,6 @@ class SecurityHeaders implements Middleware
         return $response;
     }
 
-    /**
-     * Собирает строку CSP из массива директив.
-     */
     private function buildCspHeader(array $directives): string
     {
         $parts = [];
@@ -150,16 +127,13 @@ class SecurityHeaders implements Middleware
         return implode('; ', $parts);
     }
 
-    /**
-     * Удаляет unsafe-inline, так как вместо него используется nonce.
-     */
     private function removeUnsafeInline(array $sources): array
     {
         return array_values(
-            array_filter(
-                $sources,
-                static fn($source) => $source !== "'unsafe-inline'"
-            )
+                array_filter(
+                        $sources,
+                        static fn($source) => $source !== self::CSP_UNSAFE_INLINE
+                )
         );
     }
 }

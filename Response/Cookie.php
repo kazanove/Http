@@ -19,9 +19,6 @@ class Cookie
 
     private array $cookies = [];
 
-    /**
-     * Добавляет cookie в ответ.
-     */
     public function set(string $name, string $value, array $options = []): self
     {
         if (!preg_match(self::NAME_REGEX, $name)) {
@@ -31,7 +28,7 @@ class Cookie
         }
 
         if (isset($options['samesite'])) {
-            $options['samesite'] = ucfirst(strtolower((string)$options['samesite']));
+            $options['samesite'] = ucfirst(strtolower((string) $options['samesite']));
 
             if (!in_array($options['samesite'], ['Strict', 'Lax', 'None'], true)) {
                 throw new InvalidArgumentException(
@@ -54,16 +51,11 @@ class Cookie
         return $this;
     }
 
-    /**
-     * Добавляет подписанную cookie.
-     *
-     * Подпись защищает значение от подмены на стороне клиента.
-     */
     public function setSigned(
-        string                       $name,
-        string                       $value,
+        string $name,
+        string $value,
         #[SensitiveParameter] string $secret,
-        array                        $options = []
+        array $options = []
     ): self {
         $signature = hash_hmac('sha256', $value, $secret);
         $signedValue = base64_encode($value) . '|' . $signature;
@@ -71,9 +63,6 @@ class Cookie
         return $this->set($name, $signedValue, $options);
     }
 
-    /**
-     * Удаляет cookie.
-     */
     public function remove(string $name, string $path = '/', ?string $domain = null): self
     {
         $this->cookies[$name] = [

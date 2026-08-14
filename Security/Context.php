@@ -37,8 +37,9 @@ final class Context
     /**
      * Возвращает nonce в формате директивы CSP.
      */
+    #[NoDiscard]
     public function getCspDirective(): string
     {
-        return '\'nonce-'.$this->cspNonce.'\'';
+        return '\'nonce-' . $this->cspNonce . '\'';
     }
 }

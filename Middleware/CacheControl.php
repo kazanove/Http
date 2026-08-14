@@ -6,13 +6,11 @@ namespace CodeX\Http\Middleware;
 
 use CodeX\Http\Request;
 use CodeX\Http\Response;
-use JsonException;
 
-/**
- * Управляет заголовками Cache-Control.
- */
 class CacheControl implements Middleware
 {
+    use ResolvesResponse;
+
     private array $config;
 
     public function __construct(array $config = [])
@@ -43,28 +41,9 @@ class CacheControl implements Middleware
 
     public function handle(Request $request, callable $next): Response
     {
-        $result = $next($request);
+        // Используем трейт — никаких дублирований
+        $response = $this->resolveResponse($next($request));
 
-        if ($result instanceof Response) {
-            $response = $result;
-        } else {
-            $response = new Response();
-
-            if ($result === null) {
-                $response->content = '';
-            } elseif (is_scalar($result)) {
-                $response->content = (string)$result;
-            } else {
-                try {
-                    $response->content = json_encode($result, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
-                    $response->header->set('Content-Type', 'application/json; charset=utf-8');
-                } catch (JsonException) {
-                    $response->content = '';
-                }
-            }
-        }
-
-        // Expires устарел, используем Cache-Control.
         $response->header->remove('Expires');
 
         $path = $request->getUri();
@@ -86,18 +65,8 @@ class CacheControl implements Middleware
     private function isStaticAsset(string $path, string $contentType): bool
     {
         $staticExtensions = [
-            'css',
-            'js',
-            'jpg',
-            'jpeg',
-            'png',
-            'gif',
-            'svg',
-            'webp',
-            'woff',
-            'woff2',
-            'ttf',
-            'ico',
+            'css', 'js', 'jpg', 'jpeg', 'png', 'gif', 'svg',
+            'webp', 'woff', 'woff2', 'ttf', 'ico',
         ];
 
         $extension = strtolower(pathinfo($path, PATHINFO_EXTENSION));

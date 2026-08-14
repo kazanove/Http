@@ -20,7 +20,7 @@ class Header
 
             if (is_array($headers)) {
                 foreach ($headers as $name => $value) {
-                    $this->parameters[$this->normalizeName((string)$name)] = (string)$value;
+                    $this->parameters[$this->normalizeName((string) $name)] = (string) $value;
                 }
 
                 return;
@@ -50,15 +50,16 @@ class Header
         $headers = [];
 
         foreach ($source as $key => $value) {
-            if (str_starts_with((string)$key, 'HTTP_')) {
-                $name = substr((string)$key, 5);
-                $name = strtolower($name);
-                $name = str_replace('_', '-', $name);
-                $name = $this->normalizeName($name);
+            if (str_starts_with((string) $key, 'HTTP_')) {
+                // ✅ Исправлено: $this->normalizeName(...) вместо $this(...)
+                $name = substr((string) $key, 5)
+                        |> strtolower(...)
+                        |> (static fn($x) => str_replace('_', '-', $x))
+                        |> $this->normalizeName(...);
 
-                $headers[$name] = (string)$value;
+                $headers[$name] = (string) $value;
             } elseif (in_array($key, ['CONTENT_TYPE', 'CONTENT_LENGTH'], true)) {
-                $headers[$this->normalizeName($key)] = (string)$value;
+                $headers[$this->normalizeName($key)] = (string) $value;
             }
         }
 
@@ -67,10 +68,11 @@ class Header
 
     private function normalizeName(string $name): string
     {
-        $name = strtolower($name);
-        $name = str_replace(['-', '_'], ' ', $name);
-        $name = ucwords($name);
-
-        return str_replace(' ', '-', $name);
+        // ✅ Применяем Pipe Operator для устранения цепочки присваиваний
+        return $name
+                |> strtolower(...)
+                |> (static fn($x) => str_replace(['-', '_'], ' ', $x))
+                |> ucwords(...)
+                |> (static fn($x) => str_replace(' ', '-', $x));
     }
 }
