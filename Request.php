@@ -12,21 +12,9 @@ use CodeX\Http\Request\Input;
 use CodeX\Http\Request\Server;
 use CodeX\Http\Request\UploadedFile;
 use JsonException;
+use Uri\InvalidUriException;
 use Uri\Rfc3986\Uri;
 
-/**
- * HTTP-запрос.
- *
- * Инкапсулирует входные данные:
- * - $_GET, $_POST, $_COOKIE, $_SERVER, $_FILES;
- * - заголовки запроса;
- * - JSON-тело;
- * - загруженные файлы.
- *
- * Класс остаётся «тонким» DTO: он только читает данные.
- * Решения по безопасности (CSRF, CORS) принимают отдельные сервисы,
- * но используют для этого read-only помощники, объявленные ниже.
- */
 final class Request
 {
     public readonly Server $server;
@@ -36,6 +24,15 @@ final class Request
     public readonly Header $headers;
     public readonly FileBag $files;
 
+    /**
+     * Список доверенных прокси-серверов.
+     * Только если запрос пришёл от доверенного прокси,
+     * заголовки X-Forwarded-For и X-Real-IP считаются достоверными.
+     *
+     * @var array<int, string>
+     */
+    private readonly array $trustedProxies;
+
     private ?array $jsonData = null;
     private bool $jsonLoaded = false;
 
@@ -44,7 +41,8 @@ final class Request
         ?array $get = null,
         ?array $post = null,
         ?array $cookies = null,
-        ?array $files = null
+        ?array $files = null,
+        array $trustedProxies = []
     ) {
         $this->server = new Server($server ?? $_SERVER);
         $this->get = new Input($get ?? $_GET);
@@ -52,23 +50,14 @@ final class Request
         $this->cookies = new Cookie($cookies ?? $_COOKIE);
         $this->headers = new Header($server ?? $_SERVER);
         $this->files = new FileBag($files ?? $_FILES);
+        $this->trustedProxies = $trustedProxies;
     }
 
-    // ------------------------------------------------------------------
-    // Базовые сведения о запросе
-    // ------------------------------------------------------------------
-
-    /**
-     * Возвращает HTTP-метод в верхнем регистре.
-     */
     public function getMethod(): string
     {
         return strtoupper($this->server->get('REQUEST_METHOD') ?? 'GET');
     }
 
-    /**
-     * Возвращает путь запроса без query string.
-     */
     public function getUri(): string
     {
         $uri = $this->server->get('REQUEST_URI') ?? '/';
@@ -78,7 +67,7 @@ final class Request
     }
 
     /**
-     * Возвращает объект URI (модуль URI из PHP 8.5).
+     * @throws InvalidUriException
      */
     public function getUriObject(): Uri
     {
@@ -89,9 +78,6 @@ final class Request
         return new Uri($scheme . '://' . $host . $requestUri);
     }
 
-    /**
-     * Возвращает строку запроса (query string) без ведущего «?».
-     */
     public function getQueryString(): string
     {
         $uri = $this->server->get('REQUEST_URI') ?? '/';
@@ -100,20 +86,11 @@ final class Request
         return is_string($query) ? $query : '';
     }
 
-    /**
-     * Возвращает имя хоста из заголовка Host.
-     */
     public function getHost(): string
     {
         return $this->headers->get('Host') ?? 'localhost';
     }
 
-    /**
-     * Определяет, выполнен ли запрос по HTTPS.
-     *
-     * Учитываются как прямой флаг HTTPS, так и заголовок
-     * X-Forwarded-Proto для запросов через прокси.
-     */
     public function isHttps(): bool
     {
         $https = $this->server->get('HTTPS');
@@ -126,32 +103,48 @@ final class Request
     }
 
     /**
-     * Возвращает IP-адрес клиента.
+     * Возвращает IP-адрес клиента с учётом доверенных прокси.
+     *
+     * Если запрос пришёл НЕ от доверенного прокси, возвращается
+     * только REMOTE_ADDR. Это защищает от подделки X-Forwarded-For.
      */
     public function getIp(): string
     {
-        return $this->server->get('REMOTE_ADDR') ?? '0.0.0.0';
+        $remoteAddr = $this->server->get('REMOTE_ADDR') ?? '0.0.0.0';
+
+        // Если доверенные прокси не настроены или запрос не от прокси
+        if ($this->trustedProxies === [] || !in_array($remoteAddr, $this->trustedProxies, true)) {
+            return $remoteAddr;
+        }
+
+        // Запрос от доверенного прокси — проверяем X-Forwarded-For
+        $forwardedFor = $this->headers->get('X-Forwarded-For');
+
+        if ($forwardedFor !== null) {
+            $ips = explode(',', $forwardedFor);
+            $clientIp = trim($ips[0]);
+
+            if (filter_var($clientIp, FILTER_VALIDATE_IP)) {
+                return $clientIp;
+            }
+        }
+
+        // Fallback на X-Real-IP (nginx)
+        $realIp = $this->headers->get('X-Real-IP');
+
+        if ($realIp !== null && filter_var($realIp, FILTER_VALIDATE_IP)) {
+            return $realIp;
+        }
+
+        return $remoteAddr;
     }
 
-    /**
-     * Определяет AJAX-запрос по заголовку X-Requested-With.
-     */
     public function isAjax(): bool
     {
         return strtolower($this->headers->get('X-Requested-With') ?? '')
             === 'xmlhttprequest';
     }
 
-    // ------------------------------------------------------------------
-    // JSON-тело запроса
-    // ------------------------------------------------------------------
-
-    /**
-     * Возвращает данные JSON-тела запроса.
-     *
-     * @param string $key Ключ первого уровня. Пустая строка вернёт весь массив.
-     * @param mixed $default Значение по умолчанию при отсутствии ключа.
-     */
     public function json(string $key = '', mixed $default = null): mixed
     {
         if (!$this->jsonLoaded) {
@@ -168,47 +161,21 @@ final class Request
             : $default;
     }
 
-    // ------------------------------------------------------------------
-    // Загруженные файлы
-    // ------------------------------------------------------------------
-
-    /**
-     * Возвращает один загруженный файл по ключу.
-     */
     public function file(string $key): ?UploadedFile
     {
         return $this->files->get($key);
     }
 
-    /**
-     * Возвращает массив файлов по ключу.
-     */
     public function files(string $key = ''): array
     {
         return $this->files->all($key);
     }
 
-    /**
-     * Проверяет наличие загруженного файла по ключу.
-     */
     public function hasFile(string $key): bool
     {
         return $this->file($key) !== null;
     }
 
-    // ------------------------------------------------------------------
-    // Помощники для безопасности (CSRF / CORS)
-    //
-    // Это read-only методы: они только читают данные запроса.
-    // Итоговое решение о допуске принимают классы Csrf и Cors.
-    // ------------------------------------------------------------------
-
-    /**
-     * Возвращает значение заголовка Origin.
-     *
-     * Используется CORS-политикой. Пустой заголовок трактуется как null,
-     * что означает «запрос не является кросс-доменным».
-     */
     public function getOrigin(): ?string
     {
         $origin = $this->headers->get('Origin');
@@ -216,37 +183,17 @@ final class Request
         return ($origin !== null && $origin !== '') ? $origin : null;
     }
 
-    /**
-     * Определяет preflight-запрос CORS.
-     *
-     * Preflight — это OPTIONS-запрос с заголовком Access-Control-Request-Method.
-     */
     public function isPreflight(): bool
     {
         return $this->getMethod() === 'OPTIONS'
             && $this->headers->has('Access-Control-Request-Method');
     }
 
-    /**
-     * Проверяет, относится ли метод к «безопасным» по RFC 9110.
-     *
-     * Безопасные методы не предназначены для изменения состояния сервера,
-     * поэтому для них не требуется CSRF-проверка.
-     */
     public function isSafeMethod(): bool
     {
         return in_array($this->getMethod(), ['GET', 'HEAD', 'OPTIONS'], true);
     }
 
-    /**
-     * Извлекает CSRF-токен из тела запроса или заголовка.
-     *
-     * Приоритет: сначала поле формы, затем HTTP-заголовок.
-     * Пустые значения игнорируются и приводят к возврату null.
-     *
-     * @param string $fieldName Имя поля в теле запроса.
-     * @param string $headerName Имя HTTP-заголовка с токеном.
-     */
     public function getCsrfToken(
         string $fieldName = '_csrf_token',
         string $headerName = 'X-CSRF-TOKEN'
@@ -264,15 +211,6 @@ final class Request
             : null;
     }
 
-    // ------------------------------------------------------------------
-    // Внутренние методы
-    // ------------------------------------------------------------------
-
-    /**
-     * Разбирает тело запроса как JSON.
-     *
-     * Если тело непустое, но JSON некорректен, выбрасывается исключение.
-     */
     private function parseJsonBody(): array
     {
         $raw = file_get_contents('php://input');

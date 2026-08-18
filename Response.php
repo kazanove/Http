@@ -104,7 +104,7 @@ class Response
     /**
      * Добавляет заголовок Link для preload/preconnect.
      *
-     * Используется для оптимизации HTTP/2+ и современных браузеров.
+     * @throws InvalidArgumentException При недопустимой схеме URI.
      */
     public function addLink(
         string $uri,
@@ -112,14 +112,24 @@ class Response
         string $as = '',
         string $type = ''
     ): self {
-        $link = '<'.$uri.'>; rel='.$rel;
+        // Защита от опасных схем (XSS через заголовок Link)
+        if (preg_match('/^(javascript|data|vbscript):/i', $uri)) {
+            throw new InvalidArgumentException(
+                'Недопустимая схема URI для заголовка Link.'
+            );
+        }
+
+        // Экранирование специальных символов RFC 8288
+        $safeUri = str_replace(['<', '>', '"'], '', $uri);
+
+        $link = '<' . $safeUri . '>; rel=' . $rel;
 
         if ($as !== '') {
-            $link .= '; as='.$as;
+            $link .= '; as=' . $as;
         }
 
         if ($type !== '') {
-            $link .= '; type='.$type;
+            $link .= '; type=' . $type;
         }
 
         if (!headers_sent()) {
