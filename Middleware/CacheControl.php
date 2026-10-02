@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace CodeX\Http\Middleware;
 
+use CodeX\Contract\Middleware;
 use CodeX\Http\Request;
 use CodeX\Http\Response;
 

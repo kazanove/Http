@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace CodeX\Http;
 
-use CodeX\Http\Exception\Redirect;
+use CodeX\Exception\Redirect;
 use CodeX\Http\Response\Cookie;
 use CodeX\Http\Response\Header;
 use finfo;
@@ -40,7 +40,7 @@ class Response
      * Код ответа доступен для чтения снаружи,
      * но изменяется только внутри класса.
      */
-    private(set) int $statusCode = 200;
+    public private(set) int $statusCode = 200;
 
     /**
      * Путь к файлу, если ответ должен отправить файл.
@@ -244,7 +244,7 @@ class Response
         }
 
         if (!$this->header->has('X-Frame-Options')) {
-            $this->header->set('X-Frame-Options', 'SAMEORIGIN');
+            $this->header->set('X-Frame-Options', 'DENY');
         }
 
         if (!$this->header->has('Referrer-Policy')) {

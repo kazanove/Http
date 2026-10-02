@@ -4,9 +4,12 @@ declare(strict_types=1);
 
 namespace CodeX\Http\Security;
 
-use CodeX\Http\Exception\AccessDenied;
+use CodeX\Exception\AccessDenied;
+use CodeX\Exception\Redirect;
+use CodeX\Exception\Session;
 use CodeX\Http\Request;
 use CodeX\Http\Session\Manager;
+use NoDiscard;
 use Random\RandomException;
 
 /**
@@ -41,11 +44,9 @@ readonly class Csrf
     public function getToken(): string
     {
         $token = $this->session->get(self::TOKEN_KEY);
-
         if (!is_string($token) || $token === '') {
             return $this->generateToken();
         }
-
         return $token;
     }
 
@@ -57,9 +58,7 @@ readonly class Csrf
     public function generateToken(): string
     {
         $token = bin2hex(random_bytes(32));
-
         $this->session->set(self::TOKEN_KEY, $token);
-
         return $token;
     }
 
@@ -68,27 +67,36 @@ readonly class Csrf
      *
      * Безопасные методы (GET, HEAD, OPTIONS) пропускаются без проверки.
      *
-     * @throws AccessDenied если токен отсутствует или не совпал.
+     * @throws Session если сессия истекла.
+     * @throws AccessDenied если токен присутствует, но не совпал.
      * @throws RandomException
      */
     public function verify(Request $request): void
     {
-        // Безопасные методы не изменяют состояние — проверка не требуется.
         if ($request->isSafeMethod()) {
             return;
         }
 
-        // Извлекаем токен из поля формы или заголовка.
         $token = $request->getCsrfToken(self::TOKEN_KEY, self::HEADER_NAME);
+        $sessionToken = $this->session->get(self::TOKEN_KEY);
 
-        if (!$this->validateToken($token)) {
+        // Истёкшая сессия: в сессии нет токена.
+        // Браузер может отправлять старый токен из формы,
+        // поэтому НЕ проверяем $token === null.
+        if (!is_string($sessionToken) || $sessionToken === '') {
+            throw new Session();
+        }
+
+        // Если токен в сессии есть, но токен из запроса отсутствует
+        // или не совпадает — это действительно неверный CSRF-токен.
+        if (!is_string($token) || $token === '' || !hash_equals($sessionToken, $token)) {
             if ($this->regenerateAfterVerify) {
                 $this->generateToken();
             }
 
             $this->session->addFlash(
                 'error',
-                'Неверный CSRF-токен. Пожалуйста, обновите страницу.'
+                'Неверный CSRF-токен. Обновите страницу и попробуйте снова.'
             );
 
             throw new AccessDenied('Неверный CSRF-токен.');
@@ -104,33 +112,35 @@ readonly class Csrf
      *
      * Сравнение выполняется через hash_equals для защиты от timing-атак.
      */
-    #[\NoDiscard]
+    #[NoDiscard]
     public function validateToken(?string $token): bool
     {
         if ($token === null || $token === '') {
             return false;
         }
-
         $sessionToken = $this->session->get(self::TOKEN_KEY);
-
         if (!is_string($sessionToken) || $sessionToken === '') {
             return false;
         }
-
         return hash_equals($sessionToken, $token);
     }
 
+
     /**
-     * Возвращает скрытое HTML-поле с токеном для вставки в форму.
+     * Возвращает скрытое HTML-поле с токеном.
+     *
+     * ВАЖНО: вывод экранирован через htmlspecialchars.
+     * При использовании в шаблоне допустим фильтр |raw.
+     * Не передавать пользовательские данные в этот метод.
      *
      * @throws RandomException
      */
     public function getTokenField(): string
     {
         $token = htmlspecialchars($this->getToken(), ENT_QUOTES | ENT_HTML5, 'UTF-8');
-
         return '<input type="hidden" name="' . self::TOKEN_KEY . '" value="' . $token . '">';
     }
+
 
     /**
      * Возвращает meta-тег с токеном для AJAX-запросов.
@@ -140,7 +150,6 @@ readonly class Csrf
     public function getMetaTag(): string
     {
         $token = htmlspecialchars($this->getToken(), ENT_QUOTES | ENT_HTML5, 'UTF-8');
-
         return '<meta name="csrf-token" content="' . $token . '">';
     }
 

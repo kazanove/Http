@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace CodeX\Http\Middleware;
 
+use CodeX\Contract\Middleware;
 use CodeX\Http\Request;
 use CodeX\Http\Response;
 use CodeX\Http\Security\Context;
@@ -20,9 +21,6 @@ class SecurityHeaders implements Middleware
         private readonly Context $securityContext,
         array $config = []
     ) {
-        $self = '\'' . 'self' . '\'';
-        $none = '\'' . 'none' . '\'';
-
         $this->config = array_merge([
             'x_content_type_options' => 'nosniff',
             'x_frame_options' => 'DENY',
@@ -34,7 +32,7 @@ class SecurityHeaders implements Middleware
                 'include_subdomains' => true,
                 'preload' => false,
             ],
-                'csp' => [
+            'csp' => [
                 'enabled' => true,
                 'directives' => [
                     'default-src' => [self::CSP_SELF],
@@ -130,10 +128,10 @@ class SecurityHeaders implements Middleware
     private function removeUnsafeInline(array $sources): array
     {
         return array_values(
-                array_filter(
-                        $sources,
-                        static fn($source) => $source !== self::CSP_UNSAFE_INLINE
-                )
+            array_filter(
+                $sources,
+                static fn($source) => $source !== self::CSP_UNSAFE_INLINE
+            )
         );
     }
 }

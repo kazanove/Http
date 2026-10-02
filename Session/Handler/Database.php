@@ -20,14 +20,14 @@ use SessionHandlerInterface;
  *     expires_at INT UNSIGNED NOT NULL
  * );
  */
-class Database implements SessionHandlerInterface
+readonly class Database implements SessionHandlerInterface
 {
     public function __construct(
-        private readonly PDO $pdo,
-        private readonly string $table = 'sessions',
-        private readonly int $lifetime = 1800
+        private PDO    $pdo,
+        private string $table = 'sessions',
+        private int    $lifetime = 1800
     ) {
-        if (preg_match('/^[A-Za-z0-9_]+$/', $this->table) !== 1) {
+        if (preg_match('/^\w+$/', $this->table) !== 1) {
             throw new InvalidArgumentException('Недопустимое имя таблицы сессий.');
         }
     }
@@ -64,14 +64,9 @@ class Database implements SessionHandlerInterface
     public function write(string $id, string $data): bool
     {
         $expiresAt = time() + $this->lifetime;
-
         $update = $this->pdo->prepare(
-            sprintf(
-                'UPDATE %s SET data = :data, expires_at = :expires_at WHERE id = :id',
-                $this->table
-            )
+            sprintf('UPDATE %s SET data = :data, expires_at = :expires_at WHERE id = :id', $this->table)
         );
-
         $update->execute([
             'data' => $data,
             'expires_at' => $expiresAt,
@@ -80,21 +75,17 @@ class Database implements SessionHandlerInterface
 
         if ($update->rowCount() === 0) {
             $insert = $this->pdo->prepare(
-                sprintf(
-                    'INSERT INTO %s (id, data, expires_at) VALUES (:id, :data, :expires_at)',
-                    $this->table
-                )
+                sprintf('INSERT INTO %s (id, data, expires_at) VALUES (:id, :data, :expires_at)', $this->table)
             );
-
             try {
                 $insert->execute([
                     'id' => $id,
                     'data' => $data,
                     'expires_at' => $expiresAt,
                 ]);
-            } catch (PDOException) {
-                // Возможна гонка при параллельной записи.
-                // Повторно обновляем уже существующую запись.
+            } catch (PDOException $e) {
+                // ДОБАВЛЕНО: Логирование гонки при параллельной записи
+                error_log('Session DB: обнаружена гонка при записи сессии ' . $id . ', выполнен retry. Ошибка: ' . $e->getMessage());
                 $update->execute([
                     'data' => $data,
                     'expires_at' => $expiresAt,
@@ -102,7 +93,6 @@ class Database implements SessionHandlerInterface
                 ]);
             }
         }
-
         return true;
     }
 

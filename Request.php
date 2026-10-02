@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace CodeX\Http;
 
-use CodeX\Http\Exception\Request as BadRequestException;
+use CodeX\Exception\Request as BadRequestException;
 use CodeX\Http\Request\Cookie;
 use CodeX\Http\Request\FileBag;
 use CodeX\Http\Request\Header;
@@ -15,6 +15,9 @@ use JsonException;
 use Uri\InvalidUriException;
 use Uri\Rfc3986\Uri;
 
+/**
+ * @property $attributes
+ */
 final class Request
 {
     public readonly Server $server;
@@ -23,7 +26,7 @@ final class Request
     public readonly Cookie $cookies;
     public readonly Header $headers;
     public readonly FileBag $files;
-
+    private const int MAX_CONTENT_LENGTH = 10 * 1024 * 1024;
     /**
      * Список доверенных прокси-серверов.
      * Только если запрос пришёл от доверенного прокси,
@@ -51,6 +54,8 @@ final class Request
         $this->headers = new Header($server ?? $_SERVER);
         $this->files = new FileBag($files ?? $_FILES);
         $this->trustedProxies = $trustedProxies;
+
+        $this->validateContentLength();
     }
 
     public function getMethod(): string
@@ -99,7 +104,11 @@ final class Request
             return true;
         }
 
-        return $this->server->get('HTTP_X_FORWARDED_PROTO') === 'https';
+        if ($this->isFromTrustedProxy()) {
+            return $this->server->get('HTTP_X_FORWARDED_PROTO') === 'https';
+        }
+
+        return false;
     }
 
     /**
@@ -230,5 +239,36 @@ final class Request
         }
 
         return is_array($decoded) ? $decoded : [];
+    }
+    private function isFromTrustedProxy(): bool
+    {
+        $remoteAddr = $this->server->get('REMOTE_ADDR') ?? '';
+
+        return in_array($remoteAddr, $this->trustedProxies, true);
+    }
+    private function validateContentLength(): void
+    {
+        $contentLength = $this->server->get('CONTENT_LENGTH');
+
+        if ($contentLength === null) {
+            return;
+        }
+
+        $contentLength = trim($contentLength);
+
+        // В некоторых SAPI (Nginx, Apache, built-in server) для запросов
+        // без тела (GET, HEAD, DELETE) заголовок Content-Length может приходить
+        // как пустая строка. Это штатная ситуация, которую нужно игнорировать.
+        if ($contentLength === '') {
+            return;
+        }
+
+        if (!ctype_digit($contentLength)) {
+            throw new BadRequestException('Некорректный заголовок Content-Length.');
+        }
+
+        if ((int) $contentLength > self::MAX_CONTENT_LENGTH) {
+            throw new BadRequestException('Тело запроса превышает максимально допустимый размер.');
+        }
     }
 }

@@ -11,6 +11,9 @@ use RuntimeException;
 
 /**
  * Загруженный файл.
+ * @method getExtension()
+ * @method move(string $filePath)
+ * @method getOriginalName()
  */
 final class UploadedFile
 {

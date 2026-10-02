@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace CodeX\Http\Middleware;
+namespace CodeX\Contract;
 
 use CodeX\Http\Request;
 use CodeX\Http\Response;

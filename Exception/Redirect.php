@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace CodeX\Http\Exception;
+namespace CodeX\Exception;
 
 /**
  * Исключение редиректа.

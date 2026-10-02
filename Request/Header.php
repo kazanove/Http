@@ -51,10 +51,7 @@ class Header
 
         foreach ($source as $key => $value) {
             if (str_starts_with((string) $key, 'HTTP_')) {
-                // ✅ Исправлено: $this->normalizeName(...) вместо $this(...)
                 $name = substr((string) $key, 5)
-                        |> strtolower(...)
-                        |> (static fn($x) => str_replace('_', '-', $x))
                         |> $this->normalizeName(...);
 
                 $headers[$name] = (string) $value;
